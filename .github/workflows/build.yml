@@ -1,8 +1,15 @@
 name: Build packages
+
 on:
   push:
     tags:
-      - '*'
+      - "*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. v0.8.0)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -19,11 +26,16 @@ jobs:
           fetch-depth: 0
       - id: version
         run: |
-          VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "0.$(date +%d%m%Y)")
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "0.$(date +%d%m%Y)")
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 Building version: $VERSION" >> $GITHUB_STEP_SUMMARY
 
   build:
-    name: Builder for ${{ matrix.package_type }} podkop and luci-app-podkop
+    name: Build ${{ matrix.package_type }} packages
     runs-on: ubuntu-latest
     needs: preparation
     strategy:
@@ -36,12 +48,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build ${{ matrix.package_type }}
         uses: docker/build-push-action@v6.18.0
         with:
           file: ./Dockerfile-${{ matrix.package_type }}
           context: .
           tags: podkop:ci-${{ matrix.package_type }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             PODKOP_VERSION=${{ needs.preparation.outputs.version }}
 
@@ -54,7 +72,14 @@ jobs:
           docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/utilities/. ./bin/${{ matrix.package_type }}/
           docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/luci/. ./bin/${{ matrix.package_type }}/
 
-        # IPK uses underscore `_` in filenames, while APK uses only dash `-`
+      - name: List built packages
+        run: |
+          echo "📦 Built packages:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -la ./bin/${{ matrix.package_type }}/ >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # IPK uses underscore `_` in filenames, while APK uses only dash `-`
       - name: Fix naming difference between build for packages (replace _ with -)
         if: matrix.package_type == 'ipk'
         shell: bash
@@ -69,11 +94,10 @@ jobs:
       - name: Filter files
         shell: bash
         run: |
-          # Use version from preparation job (already without 'v' prefix)
           VERSION="${{ needs.preparation.outputs.version }}"
 
           mkdir -p ./filtered-bin/${{ matrix.package_type }}
-          cp ./bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-*.${{ matrix.package_type }} "./filtered-bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-${VERSION}.${{ matrix.package_type }}"
+          cp ./bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-*.${{ matrix.package_type }} "./filtered-bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-${VERSION}.${{ matrix.package_type }}" || true
           cp ./bin/${{ matrix.package_type }}/podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
           cp ./bin/${{ matrix.package_type }}/luci-app-podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
 
@@ -83,17 +107,19 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: release-files-${{ github.ref_name }}-${{ matrix.package_type }}
+          name: release-files-${{ github.ref_name || needs.preparation.outputs.version }}-${{ matrix.package_type }}
           path: ./filtered-bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [preparation, build]
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v5.0.0
+
       - name: Create release dir
         run: mkdir -p ./filtered-bin/release
 
@@ -109,11 +135,39 @@ jobs:
           name: release-files-${{ github.ref_name }}-apk
           path: ./filtered-bin/release
 
+      - name: List release files
+        run: |
+          echo "📦 Release files:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -la ./filtered-bin/release/ >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - name: Release
         uses: softprops/action-gh-release@v2.4.0
         with:
           files: ./filtered-bin/release/*.*
           draft: false
-          prerelease: false
-          name: ${{ github.ref_name }}
+          prerelease: true
+          name: ${{ github.ref_name }} (Experimental Fork)
           tag_name: ${{ github.ref_name }}
+          body: |
+            ## 🧪 Experimental Fork Release
+
+            > ⚠️ This is an experimental fork of [Podkop](https://github.com/itdoginfo/podkop)
+
+            ### 📦 Packages
+            - `podkop-*.ipk` / `podkop-*.apk` - Main package
+            - `luci-app-podkop-*.ipk` / `luci-app-podkop-*.apk` - LuCI interface
+            - `luci-i18n-podkop-ru-*.ipk` / `*.apk` - Russian translation
+
+            ### 🚀 Installation
+            ```bash
+            # Download and install
+            wget <package-url>
+            opkg install <package-file>
+            ```
+
+            ### ✨ New Features in this Fork
+            - Subscription support (sing-box & base64)
+            - Tag-based filtering
+            - Auto-update via cron
