@@ -787,6 +787,36 @@ async function getDashboardSections() {
           ]
         };
       }
+      if (section.proxy_config_type === "subscription") {
+        const selector = proxies.find(
+          (proxy) => proxy.code === `${section[".name"]}-out`
+        );
+        const outbound = proxies.find(
+          (proxy) => proxy.code === `${section[".name"]}-urltest-out`
+        );
+        const outbounds = (outbound?.value?.all ?? []).map((code) => proxies.find((item) => item.code === code)).map((item) => ({
+          code: item?.code || "",
+          displayName: item?.value?.name || "",
+          latency: item?.value?.history?.[0]?.delay || 0,
+          type: item?.value?.type || "",
+          selected: selector?.value?.now === item?.code
+        }));
+        return {
+          withTagSelect: true,
+          code: selector?.code || section[".name"],
+          displayName: `${section[".name"]} (subscription)`,
+          outbounds: [
+            {
+              code: outbound?.code || "",
+              displayName: _("Fastest"),
+              latency: outbound?.value?.history?.[0]?.delay || 0,
+              type: outbound?.value?.type || "",
+              selected: selector?.value?.now === outbound?.code
+            },
+            ...outbounds
+          ]
+        };
+      }
     }
     if (section.connection_type === "vpn") {
       const outbound = proxies.find(

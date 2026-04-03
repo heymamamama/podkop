@@ -283,6 +283,18 @@ function createSettingsContent(section) {
   o.rmempty = false;
 
   o = section.option(
+    form.ListValue,
+    "subscription_update_interval",
+    _("Subscription Update Frequency"),
+    _("Select how often subscription caches are refreshed automatically"),
+  );
+  Object.entries(main.SUBSCRIPTION_UPDATE_INTERVAL_OPTIONS).forEach(([key, label]) => {
+    o.value(key, _(label));
+  });
+  o.default = "disabled";
+  o.rmempty = false;
+
+  o = section.option(
     form.Flag,
     "download_lists_via_proxy",
     _("Download Lists via Proxy/VPN"),

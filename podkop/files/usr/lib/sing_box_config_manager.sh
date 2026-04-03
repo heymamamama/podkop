@@ -1162,25 +1162,29 @@ sing_box_cm_add_reject_route_rule() {
 #   config: string (JSON), sing-box configuration to modify
 #   key: string, the key to set for the hijack-dns rule
 #   value: string (JSON), value to assign to the key
+#   inbound: string, optional inbound tag to limit the rule
 # Outputs:
 #   Writes updated JSON configuration to stdout
 # Example:
-#   CONFIG=$(sing_box_cm_add_hijack_dns_route_rule "$CONFIG" "protocol" "dns")
+#   CONFIG=$(sing_box_cm_add_hijack_dns_route_rule "$CONFIG" "protocol" "dns" "dns-in")
 #######################################
 sing_box_cm_add_hijack_dns_route_rule() {
     local config="$1"
     local key="$2"
     local value="$3"
+    local inbound="$4"
 
     value=$(_normalize_arg "$value")
 
     echo "$config" | jq \
         --arg key "$key" \
         --argjson value "$value" \
+        --arg inbound "$inbound" \
         '.route.rules += [{
             action: "hijack-dns",
             ($key): $value
-        }]'
+        }
+        + (if $inbound != "" then { inbound: $inbound } else {} end)]'
 }
 
 #######################################

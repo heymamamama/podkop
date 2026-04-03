@@ -730,6 +730,73 @@ sing_box_configure_outbounds() {
     config_foreach configure_outbound_handler "section"
 }
 
+append_outbound_tag() {
+    local current_tags="$1"
+    local new_tag="$2"
+
+    if [ -z "$current_tags" ]; then
+        echo "$new_tag"
+    else
+        printf '%s\n%s' "$current_tags" "$new_tag"
+    fi
+}
+
+outbound_tags_to_json_array() {
+    local tags="$1"
+
+    printf '%s' "$tags" | jq -R -s 'split("\n") | map(select(length > 0))'
+}
+
+subscription_validate_json_outbound() {
+    local outbound_json="$1"
+    local outbound_tag="$2"
+    local validation_config tmpfile
+
+    validation_config='{"log":{"disabled":true},"outbounds":[],"route":{"final":""}}'
+    validation_config=$(sing_box_cm_add_raw_outbound "$validation_config" "$outbound_tag" "$outbound_json" 2> /dev/null)
+    [ -z "$validation_config" ] && return 1
+
+    validation_config=$(echo "$validation_config" | jq --arg tag "$outbound_tag" '.route.final = $tag' 2> /dev/null)
+    [ -z "$validation_config" ] && return 1
+
+    tmpfile=$(mktemp)
+    sing_box_cm_save_config_to_file "$validation_config" "$tmpfile"
+
+    if sing-box -c "$tmpfile" check > /dev/null 2>&1; then
+        rm -f "$tmpfile"
+        return 0
+    fi
+
+    rm -f "$tmpfile"
+    return 1
+}
+
+subscription_validate_proxy_link() {
+    local section="$1"
+    local link="$2"
+    local udp_over_tcp="$3"
+    local outbound_tag="$4"
+    local validation_config tmpfile
+
+    validation_config='{"log":{"disabled":true},"outbounds":[],"route":{"final":""}}'
+    validation_config=$(sing_box_cf_add_proxy_outbound "$validation_config" "$section" "$link" "$udp_over_tcp" "$outbound_tag" 2> /dev/null)
+    [ -z "$validation_config" ] && return 1
+
+    validation_config=$(echo "$validation_config" | jq --arg tag "$outbound_tag" '.route.final = $tag' 2> /dev/null)
+    [ -z "$validation_config" ] && return 1
+
+    tmpfile=$(mktemp)
+    sing_box_cm_save_config_to_file "$validation_config" "$tmpfile"
+
+    if sing-box -c "$tmpfile" check > /dev/null 2>&1; then
+        rm -f "$tmpfile"
+        return 0
+    fi
+
+    rm -f "$tmpfile"
+    return 1
+}
+
 configure_outbound_handler() {
     local section="$1"
 
@@ -826,15 +893,13 @@ configure_outbound_handler() {
             ;;
         subscription)
             log "Detected proxy configuration type: subscription" "debug"
-            local subscription_url subscription_type subscription_filter subscription_selected \
-                subscription_mode udp_over_tcp i outbound_tags outbound_tag urltest_tag selector_tag \
-                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url \
-                proxy_links filters_str
+            local subscription_url subscription_type subscription_mode udp_over_tcp i outbound_tags outbound_tag \
+                urltest_tag selector_tag urltest_outbounds selector_outbounds urltest_check_interval \
+                urltest_tolerance urltest_testing_url proxy_links filters_str selected_str outbounds_json \
+                tmpfile link link_tag outbound
             
             config_get subscription_url "$section" "subscription_url"
             config_get subscription_type "$section" "subscription_type" "auto"
-            config_get subscription_filter "$section" "subscription_filter"
-            config_get subscription_selected "$section" "subscription_selected"
             config_get subscription_mode "$section" "subscription_mode" "filter"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
@@ -845,73 +910,78 @@ configure_outbound_handler() {
                 log "Subscription URL is not set for section $section. Aborted." "fatal"
                 exit 1
             fi
-            
-            # Build filters string from list
-            for filter in $subscription_filter; do
-                if [ -z "$filters_str" ]; then
-                    filters_str="$filter"
-                else
-                    filters_str="$filters_str $filter"
-                fi
-            done
-            
-            # Get proxy links based on subscription type
-            if [ "$subscription_type" = "singbox" ]; then
-                # For sing-box subscriptions, we add outbounds directly from JSON
-                local outbounds_json
-                outbounds_json=$(subscription_get_outbounds_json "$subscription_url" "$subscription_type" "$filters_str" "$section")
-                
-                if [ "$outbounds_json" = "[]" ] || [ -z "$outbounds_json" ]; then
-                    log "No outbounds found in subscription for section $section" "warn"
-                    return 0
-                fi
-                
-                # Add each outbound from JSON
-                i=1
-                echo "$outbounds_json" | jq -c '.[]' | while IFS= read -r outbound; do
-                    local tag
-                    tag=$(echo "$outbound" | jq -r '.tag')
-                    config=$(echo "$config" | jq --argjson outbound "$outbound" '.outbounds += [$outbound]')
-                    if [ -z "$outbound_tags" ]; then
-                        outbound_tags="$tag"
-                    else
-                        outbound_tags="$outbound_tags,$tag"
+
+            filters_str=$(subscription_get_config_list "$section" "subscription_filter")
+            selected_str=$(subscription_get_selected_outbounds "$section")
+            outbounds_json=$(subscription_get_outbounds_json \
+                "$subscription_url" "$subscription_type" "$filters_str" "$selected_str" "$subscription_mode")
+
+            i=1
+
+            if [ -n "$outbounds_json" ] && [ "$outbounds_json" != "[]" ]; then
+                tmpfile=$(mktemp)
+                echo "$outbounds_json" | jq -c '.[]' > "$tmpfile"
+
+                while IFS= read -r outbound; do
+                    [ -z "$outbound" ] && continue
+
+                    outbound_tag=$(echo "$outbound" | jq -r '.tag // empty')
+                    [ -z "$outbound_tag" ] && outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+
+                    if ! subscription_validate_json_outbound "$outbound" "$outbound_tag"; then
+                        log "Skipping invalid subscription outbound '$outbound_tag' in section $section" "warn"
+                        i=$((i + 1))
+                        continue
                     fi
+
+                    config=$(sing_box_cm_add_raw_outbound "$config" "$outbound_tag" "$outbound")
+                    outbound_tags=$(append_outbound_tag "$outbound_tags" "$outbound_tag")
                     i=$((i + 1))
-                done
+                done < "$tmpfile"
+
+                rm -f "$tmpfile"
             else
-                # For base64 subscriptions, get proxy links and parse them
-                proxy_links=$(subscription_get_proxy_links "$subscription_url" "$filters_str")
-                
-                if [ -z "$proxy_links" ]; then
-                    log "No proxy links found in subscription for section $section" "warn"
-                    return 0
+                proxy_links=$(subscription_get_proxy_links \
+                    "$subscription_url" "$subscription_type" "$filters_str" "$selected_str" "$subscription_mode")
+
+                if [ -n "$proxy_links" ]; then
+                    tmpfile=$(mktemp)
+                    printf '%s\n' "$proxy_links" > "$tmpfile"
+
+                    while IFS='|' read -r link link_tag; do
+                        [ -z "$link" ] && continue
+
+                        outbound_tag="$link_tag"
+                        [ -z "$outbound_tag" ] && outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+
+                        if ! subscription_validate_proxy_link "$section-$i" "$link" "$udp_over_tcp" "$outbound_tag"; then
+                            log "Skipping invalid subscription link '$outbound_tag' in section $section" "warn"
+                            i=$((i + 1))
+                            continue
+                        fi
+
+                        config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp" "$outbound_tag")"
+                        outbound_tags=$(append_outbound_tag "$outbound_tags" "$outbound_tag")
+                        i=$((i + 1))
+                    done < "$tmpfile"
+
+                    rm -f "$tmpfile"
                 fi
-                
-                i=1
-                echo "$proxy_links" | while IFS= read -r link; do
-                    [ -z "$link" ] && continue
-                    config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
-                    outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
-                    if [ -z "$outbound_tags" ]; then
-                        outbound_tags="$outbound_tag"
-                    else
-                        outbound_tags="$outbound_tags,$outbound_tag"
-                    fi
-                    i=$((i + 1))
-                done
+            fi
+
+            if [ -z "$outbound_tags" ]; then
+                log "No valid outbounds found in subscription for section $section" "warn"
+                return 0
             fi
             
             # Create urltest and selector outbounds
-            if [ -n "$outbound_tags" ]; then
-                urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
-                selector_tag="$(get_outbound_tag_by_section "$section")"
-                urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
-                selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
-                config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
-                    "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
-                config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
-            fi
+            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+            selector_tag="$(get_outbound_tag_by_section "$section")"
+            urltest_outbounds="$(outbound_tags_to_json_array "$outbound_tags")"
+            selector_outbounds="$(outbound_tags_to_json_array "$(append_outbound_tag "$outbound_tags" "$urltest_tag")")"
+            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
+                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
             ;;
         *)
             log "Unknown proxy configuration type: '$proxy_config_type'. Aborted." "fatal"
@@ -1006,7 +1076,7 @@ sing_box_configure_route() {
     sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG")
     config=$(sing_box_cm_sniff_route_rule "$config" "inbound" "$sniff_inbounds")
 
-    config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
+    config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns" "$SB_DNS_INBOUND_TAG")
 
     local disable_quic
     config_get_bool disable_quic "settings" "disable_quic" 0
@@ -1989,6 +2059,7 @@ show_config() {
     tmp_config=$(mktemp)
 
     sed -e 's/\(option proxy_string\).*/\1 '\''MASKED'\''/g' \
+        -e 's/\(option subscription_url\).*/\1 '\''MASKED'\''/g' \
         -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
         -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
         -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
@@ -2357,6 +2428,41 @@ check_fakeip() {
     curl -m 3 -s "https://$FAKEIP_TEST_DOMAIN/check" | jq .
 }
 
+clash_api_delay_response_is_success() {
+    local response="$1"
+
+    [ -z "$response" ] && return 1
+
+    echo "$response" | jq -e 'type == "object" and (has("message") | not) and (has("error") | not)' > /dev/null 2>&1
+}
+
+clash_api_measure_interface_proxy_latency() {
+    local proxy_tag="$1"
+    local timeout_ms="$2"
+
+    local section interface_name timeout_seconds response delay curl_status
+    section="${proxy_tag%-out}"
+    config_get interface_name "$section" "interface"
+
+    if [ -z "$interface_name" ]; then
+        return 1
+    fi
+
+    timeout_seconds=$(((timeout_ms + 999) / 1000))
+
+    for test_url in $CLASH_API_TEST_URLS; do
+        response=$(curl --interface "$interface_name" -o /dev/null -s -w "%{time_total}" -m "$timeout_seconds" "$test_url" 2> /dev/null)
+        curl_status=$?
+        if [ "$curl_status" -eq 0 ] && [ -n "$response" ]; then
+            delay=$(awk "BEGIN {printf \"%d\", $response * 1000}")
+            echo "{\"delay\":$delay,\"fallback\":\"interface\"}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 #######################################
 # Clash API interface for managing proxies and groups
 # Arguments:
@@ -2374,13 +2480,12 @@ check_fakeip() {
 
 clash_api() {
     local action="$1"
-    local clash_api_controller_address CLASH_URL TEST_URL
+    local clash_api_controller_address CLASH_URL
     clash_api_controller_address="$(get_service_listen_address)"
     if [ -z "$clash_api_controller_address" ]; then
         clash_api_controller_address="127.0.0.1"
     fi
     CLASH_URL="$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
-    TEST_URL="https://www.gstatic.com/generate_204"
 
     local enable_yacd_wan_access yacd_secret_key auth_header
     config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
@@ -2400,31 +2505,72 @@ clash_api() {
     get_proxy_latency)
         local proxy_tag="$2"
         local timeout="${3:-2000}"
+        local response last_response
 
         if [ -z "$proxy_tag" ]; then
             echo '{"error":"proxy_tag required"}' | jq .
             return 1
         fi
 
-        curl -G -s "$CLASH_URL/proxies/$proxy_tag/delay" \
-            --header "$auth_header" \
-            --data-urlencode "url=$TEST_URL" \
-            --data-urlencode "timeout=$timeout" | jq .
+        for test_url in $CLASH_API_TEST_URLS; do
+            response=$(
+                curl -G -s "$CLASH_URL/proxies/$proxy_tag/delay" \
+                    --header "$auth_header" \
+                    --data-urlencode "url=$test_url" \
+                    --data-urlencode "timeout=$timeout"
+            )
+
+            if clash_api_delay_response_is_success "$response"; then
+                echo "$response" | jq .
+                return 0
+            fi
+
+            [ -n "$response" ] && last_response="$response"
+        done
+
+        if response=$(clash_api_measure_interface_proxy_latency "$proxy_tag" "$timeout"); then
+            echo "$response" | jq .
+            return 0
+        fi
+
+        if [ -n "$last_response" ]; then
+            echo "$last_response" | jq .
+        else
+            echo '{"message":"Timeout"}' | jq .
+        fi
         ;;
 
     get_group_latency)
         local group_tag="$2"
         local timeout="${3:-5000}"
+        local response last_response
 
         if [ -z "$group_tag" ]; then
             echo '{"error":"group_tag required"}' | jq .
             return 1
         fi
 
-        curl -G -s "$CLASH_URL/group/$group_tag/delay" \
-            --header "$auth_header" \
-            --data-urlencode "url=$TEST_URL" \
-            --data-urlencode "timeout=$timeout" | jq .
+        for test_url in $CLASH_API_TEST_URLS; do
+            response=$(
+                curl -G -s "$CLASH_URL/group/$group_tag/delay" \
+                    --header "$auth_header" \
+                    --data-urlencode "url=$test_url" \
+                    --data-urlencode "timeout=$timeout"
+            )
+
+            if clash_api_delay_response_is_success "$response"; then
+                echo "$response" | jq .
+                return 0
+            fi
+
+            [ -n "$response" ] && last_response="$response"
+        done
+
+        if [ -n "$last_response" ]; then
+            echo "$last_response" | jq .
+        else
+            echo '{"message":"Timeout"}' | jq .
+        fi
         ;;
 
     set_group_proxy)
@@ -2800,7 +2946,7 @@ global_check() {
     local fakeip_address
     fakeip_address=$(dig +short @127.0.0.42 $FAKEIP_TEST_DOMAIN)
 
-    if echo "$fakeip_address" | grep -q "^198\.18\."; then
+    if echo "$fakeip_address" | grep -Eq "^198\.(18|19)\."; then
         print_global "✅ Sing-box works with FakeIP: $fakeip_address"
     else
         print_global "❌ Sing-box does NOT work with FakeIP: $fakeip_address"

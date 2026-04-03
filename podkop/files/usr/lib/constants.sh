@@ -7,6 +7,7 @@ RESOLV_CONF="/etc/resolv.conf"
 DNS_RESOLVERS="1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 9.9.9.9 9.9.9.11 94.140.14.14 94.140.15.15 208.67.220.220 208.67.222.222 77.88.8.1 77.88.8.8"
 CHECK_PROXY_IP_DOMAIN="ip.podkop.fyi"
 FAKEIP_TEST_DOMAIN="fakeip.podkop.fyi"
+CLASH_API_TEST_URLS="https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204 https://captive.apple.com https://connectivity-check.ubuntu.com http://ifconfig.me"
 TMP_SING_BOX_FOLDER="/tmp/sing-box"
 TMP_RULESET_FOLDER="$TMP_SING_BOX_FOLDER/rulesets"
 CLOUDFLARE_OCTETS="8.47 162.159 188.114" # Endpoints https://github.com/ampetelin/warp-endpoint-checker
@@ -66,6 +67,8 @@ COMMUNITY_SERVICES="russia_inside russia_outside ukraine_inside geoblock block p
 
 ## Subscriptions
 SUBSCRIPTION_CACHE_DIR="/tmp/podkop/subscriptions"
-SUBSCRIPTION_USER_AGENT_SINGBOX="SFA/1.11.9"
-SUBSCRIPTION_USER_AGENT_LINKS="podkop"
+SUBSCRIPTION_USER_AGENT_SINGBOX="singbox/"
+SUBSCRIPTION_USER_AGENT_LINKS="singbox/"
+SUBSCRIPTION_DEVICE_OS="OpenWrt Linux"
+SUBSCRIPTION_HWID_LENGTH="12"
 SUBSCRIPTION_UPDATE_INTERVALS="10m 1h 6h 1d disabled"

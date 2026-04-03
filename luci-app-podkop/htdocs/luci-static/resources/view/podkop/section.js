@@ -26,6 +26,7 @@ function createSectionContent(section) {
   o.value("selector", _("Selector"));
   o.value("urltest", _("URLTest"));
   o.value("outbound", _("Outbound Config"));
+  o.value("subscription", _("Subscription"));
   o.default = "url";
   o.depends("connection_type", "proxy");
 
@@ -57,6 +58,72 @@ function createSectionContent(section) {
 
     return validation.message;
   };
+
+  o = section.option(
+    form.Value,
+    "subscription_url",
+    _("Subscription URL"),
+    _("Provider subscription URL"),
+  );
+  o.depends("proxy_config_type", "subscription");
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    if (!value || value.length === 0) {
+      return true;
+    }
+
+    const validation = main.validateUrl(value);
+
+    if (validation.valid) {
+      return true;
+    }
+
+    return validation.message;
+  };
+
+  o = section.option(
+    form.ListValue,
+    "subscription_type",
+    _("Subscription Type"),
+    _("Choose how the provider response should be interpreted"),
+  );
+  o.value("auto", _("Auto-detect"));
+  o.value("singbox", _("Sing-box Outbounds"));
+  o.value("base64", _("Base64 Links"));
+  o.default = "auto";
+  o.rmempty = false;
+  o.depends("proxy_config_type", "subscription");
+
+  o = section.option(
+    form.ListValue,
+    "subscription_mode",
+    _("Subscription Mode"),
+    _("Choose how Podkop selects proxies from the subscription"),
+  );
+  o.value("filter", _("Filter by tags"));
+  o.value("select", _("Manual selection"));
+  o.value("both", _("Both"));
+  o.default = "filter";
+  o.rmempty = false;
+  o.depends("proxy_config_type", "subscription");
+
+  o = section.option(
+    form.DynamicList,
+    "subscription_filter",
+    _("Subscription Filter"),
+    _("Include proxies whose tags contain these values"),
+  );
+  o.depends("proxy_config_type", "subscription");
+  o.rmempty = true;
+
+  o = section.option(
+    form.DynamicList,
+    "subscription_selected",
+    _("Subscription Selected"),
+    _("Include proxies whose tags exactly match these values"),
+  );
+  o.depends("proxy_config_type", "subscription");
+  o.rmempty = true;
 
   o = section.option(
     form.TextValue,
@@ -139,6 +206,7 @@ function createSectionContent(section) {
   o.value("5m", _("Every 5 minutes"));
   o.default = "3m";
   o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "subscription");
 
   o = section.option(
     form.Value,
@@ -149,6 +217,7 @@ function createSectionContent(section) {
   o.default = "50";
   o.rmempty = false;
   o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "subscription");
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return true;
@@ -176,6 +245,7 @@ function createSectionContent(section) {
   o.default = "https://www.gstatic.com/generate_204";
   o.rmempty = false;
   o.depends("proxy_config_type", "urltest");
+  o.depends("proxy_config_type", "subscription");
 
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
