@@ -95,15 +95,16 @@ sing_box_cf_add_proxy_outbound() {
         )"
         ;;
     vless)
-        local tag host port uuid flow packet_encoding
+        local tag host port uuid flow packet_encoding tcp_multi_path
         tag="${tag_override:-$(get_outbound_tag_by_section "$section")}"
         host=$(url_get_host "$url")
         port=$(url_get_port "$url")
         uuid=$(url_get_userinfo "$url")
         flow=$(url_get_query_param "$url" "flow")
         packet_encoding=$(url_get_query_param "$url" "packetEncoding")
+        tcp_multi_path=$(url_get_query_param "$url" "tcpMultiPath")
 
-        config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding")
+        config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding" "$tcp_multi_path")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")
         ;;
@@ -255,6 +256,15 @@ _add_outbound_transport() {
 
         config=$(
             sing_box_cm_set_grpc_transport_for_outbound "$config" "$outbound_tag" "$grpc_service_name"
+        )
+        ;;
+    httpupgrade)
+        local httpupgrade_host httpupgrade_path
+        httpupgrade_host=$(url_get_query_param "$url" "host")
+        httpupgrade_path=$(url_get_query_param "$url" "path")
+
+        config=$(
+            sing_box_cm_set_httpupgrade_transport_for_outbound "$config" "$outbound_tag" "$httpupgrade_host" "$httpupgrade_path"
         )
         ;;
     *)

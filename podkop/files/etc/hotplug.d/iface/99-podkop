@@ -1,0 +1,26 @@
+#!/bin/sh
+
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || exit 0
+[ "$INTERFACE" = "loopback" ] && exit 0
+[ -x /etc/init.d/podkop ] || exit 0
+[ -f /etc/iproute2/rt_tables ] || exit 0
+
+if ! /etc/init.d/podkop enabled 2> /dev/null; then
+    exit 0
+fi
+
+if ! pidof sing-box > /dev/null 2>&1; then
+    exit 0
+fi
+
+grep -q "^105 podkop$" /etc/iproute2/rt_tables || echo "105 podkop" >> /etc/iproute2/rt_tables
+
+if ! ip route list table podkop | grep -q "local default dev lo scope host"; then
+    ip route add local 0.0.0.0/0 dev lo table podkop
+fi
+
+if ! ip rule list | grep -q "from all fwmark 0x105 lookup podkop"; then
+    ip -4 rule add fwmark 0x105 table podkop priority 105
+fi
+
+logger -t podkop "restored tproxy routing after iface event: $ACTION $INTERFACE"

@@ -421,6 +421,9 @@ function renderDiagnosticSystemInfoWidget() {
     const version = normalizeCompiledVersion(
       diagnosticsSystemInfo.podkop_version,
     );
+    const latestVersion = normalizeCompiledVersion(
+      diagnosticsSystemInfo.podkop_latest_version,
+    );
     const isDevVersion = version === 'dev';
 
     if (loading || unknown || !hasActualVersion || isDevVersion) {
@@ -430,7 +433,7 @@ function renderDiagnosticSystemInfoWidget() {
       };
     }
 
-    if (version !== `v${diagnosticsSystemInfo.podkop_latest_version}`) {
+    if (version !== latestVersion) {
       logger.debug(
         '[DIAGNOSTIC]',
         'diagnosticsSystemInfo',

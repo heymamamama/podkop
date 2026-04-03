@@ -89,6 +89,8 @@ _check_outbound_section() {
     local section="$1"
     local proxy_string interface outbound_json urltest_proxy_links
 
+    section_is_enabled "$section" || return 0
+
     config_get proxy_string "$section" "proxy_string"
     config_get selector_proxy_links "$section" "selector_proxy_links"
     config_get urltest_proxy_links "$section" "urltest_proxy_links"
@@ -120,7 +122,8 @@ start_main() {
 
     br_netfilter_disable
 
-    # Sync time for DoH/DoT
+    # Sync time for DoH/DoT after WAN recovery.
+    wait_for_wan_connection 30
     /usr/sbin/ntpd -q -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123
 
     sleep 1
@@ -234,9 +237,112 @@ validate_service() {
     exit 1
 }
 
+section_is_enabled() {
+    local section="$1"
+    local enabled
+
+    config_get_bool enabled "$section" "enabled" 1
+
+    [ "$enabled" -eq 1 ]
+}
+
+section_is_outbound_connection_type() {
+    local section="$1"
+    local connection_type
+
+    config_get connection_type "$section" "connection_type"
+
+    [ "$connection_type" = "proxy" ] || [ "$connection_type" = "vpn" ]
+}
+
+get_interface_primary_ipv4() {
+    local interface="$1"
+    local interface_address
+
+    network_get_ipaddr interface_address "$interface"
+
+    if [ -z "$interface_address" ] && command -v ip > /dev/null 2>&1; then
+        interface_address="$(ip -4 addr show dev "$interface" 2> /dev/null | awk '/inet / {print $2; exit}' | cut -d/ -f1)"
+    fi
+
+    echo "$interface_address"
+}
+
+wait_for_wan_connection() {
+    local timeout="${1:-30}"
+    local elapsed=0
+    local wan_interface wan_address
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        network_flush_cache
+        network_find_wan wan_interface 2> /dev/null
+
+        if [ -n "$wan_interface" ]; then
+            wan_address="$(get_interface_primary_ipv4 "$wan_interface")"
+            if [ -n "$wan_address" ]; then
+                log "WAN connection is ready on interface '$wan_interface' with address $wan_address" "debug"
+                return 0
+            fi
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    log "WAN connection is not ready after ${timeout}s, continuing NTP sync without waiting" "warn"
+    return 1
+}
+
+get_section_route_outbound_tag() {
+    local section="$1"
+    local connection_type
+
+    config_get connection_type "$section" "connection_type"
+
+    case "$connection_type" in
+    block)
+        echo "$SB_REJECT_RULE_TAG"
+        ;;
+    exclusion)
+        echo "$SB_DIRECT_OUTBOUND_TAG"
+        ;;
+    proxy | vpn)
+        get_outbound_tag_by_section "$section"
+        ;;
+    *)
+        echo ""
+        ;;
+    esac
+}
+
+get_latency_test_urls_for_tag() {
+    local tag="$1"
+    local testing_url_override="$2"
+    local section testing_url
+
+    if [ -n "$testing_url_override" ]; then
+        echo "$testing_url_override"
+        return 0
+    fi
+
+    section="${tag%-urltest-out}"
+    if [ "$section" = "$tag" ]; then
+        section="${tag%-out}"
+    fi
+
+    if [ "$section" != "$tag" ]; then
+        config_get testing_url "$section" "urltest_testing_url"
+    fi
+
+    echo "${testing_url:-$CLASH_API_TEST_URLS}"
+}
+
 process_validate_service() {
     local section="$1"
     local community_lists
+
+    section_is_enabled "$section" || return 0
+
     config_get community_lists "$section" "community_lists"
     if [ -n "$community_lists" ]; then
         config_list_foreach "$section" "community_lists" validate_service
@@ -317,6 +423,7 @@ create_nft_rules() {
     nft add chain inet "$NFT_TABLE_NAME" mangle_output '{ type route hook output priority -150; policy accept; }'
     nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
 
+    nft insert rule inet "$NFT_TABLE_NAME" mangle ct status dnat return
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set 0x105 counter
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set 0x105 counter
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set 0x105 counter
@@ -434,7 +541,11 @@ dnsmasq_restore() {
 
 add_cron_job() {
     ## Future: make a check so that it doesn't recreate many times
+    local section="$1"
     local community_lists remote_domain_lists remote_subnet_lists update_interval
+
+    section_is_enabled "$section" || return 0
+
     config_get community_lists "$section" "community_lists"
     config_get remote_domain_lists "$section" "remote_domain_lists"
     config_get remote_subnet_lists "$section" "remote_subnet_lists"
@@ -583,6 +694,8 @@ _update_section_subscription() {
     local section="$1"
     local proxy_config_type subscription_url
 
+    section_is_enabled "$section" || return 0
+
     config_get proxy_config_type "$section" "proxy_config_type"
     
     if [ "$proxy_config_type" != "subscription" ]; then
@@ -645,6 +758,8 @@ add_subscription_cron_job() {
 _check_has_subscription() {
     local section="$1"
     local proxy_config_type
+
+    section_is_enabled "$section" || return 0
     
     config_get proxy_config_type "$section" "proxy_config_type"
     
@@ -799,6 +914,9 @@ subscription_validate_proxy_link() {
 
 configure_outbound_handler() {
     local section="$1"
+
+    section_is_enabled "$section" || return 0
+    section_is_outbound_connection_type "$section" || return 0
 
     local connection_type
     config_get connection_type "$section" "connection_type"
@@ -1108,13 +1226,17 @@ sing_box_configure_route() {
 include_source_ips_in_routing_handler() {
     local section="$1"
 
-    local fully_routed_ips rule_tag
+    section_is_enabled "$section" || return 0
+
+    local fully_routed_ips rule_tag route_outbound_tag
     config_get fully_routed_ips "$section" "fully_routed_ips"
     if [ -n "$fully_routed_ips" ]; then
+        route_outbound_tag="$(get_section_route_outbound_tag "$section")"
+        [ -z "$route_outbound_tag" ] && return 0
         rule_tag="$(gen_id)"
         config=$(
             sing_box_cm_add_route_rule \
-                "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$(get_outbound_tag_by_section "$section")"
+                "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$route_outbound_tag"
         )
         config_list_foreach "$section" "fully_routed_ips" include_source_ip_in_routing_handler "$rule_tag"
     fi
@@ -1157,6 +1279,8 @@ exclude_source_ip_from_routing_handler() {
 configure_routing_for_section_lists() {
     local section="$1"
 
+    section_is_enabled "$section" || return 0
+
     log "Configuring routing for '$section' section"
     if ! section_has_enabled_lists "$section"; then
         log "Section '$section' does not have any enabled list, skipping..." "warn"
@@ -1164,7 +1288,7 @@ configure_routing_for_section_lists() {
     fi
 
     local community_lists user_domain_list_type user_subnet_list_type local_domain_lists local_subnet_lists \
-        remote_domain_lists remote_subnet_lists section_connection_type route_rule_tag
+        remote_domain_lists remote_subnet_lists section_connection_type route_rule_tag route_outbound_tag
     config_get community_lists "$section" "community_lists"
     config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
     config_get user_subnet_list_type "$section" "user_subnet_list_type" "disabled"
@@ -1174,12 +1298,17 @@ configure_routing_for_section_lists() {
     config_get remote_subnet_lists "$section" "remote_subnet_lists"
     config_get section_connection_type "$section" "connection_type"
 
+    route_outbound_tag="$(get_section_route_outbound_tag "$section")"
+    if [ -z "$route_outbound_tag" ]; then
+        log "Unsupported connection type '$section_connection_type' for section '$section', skipping list routing" "warn"
+        return 0
+    fi
+
     if [ "$section_connection_type" = "block" ]; then
         route_rule_tag="$SB_REJECT_RULE_TAG"
     else
         route_rule_tag="$(gen_id)"
-        outbound_tag=$(get_outbound_tag_by_section "$section")
-        config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+        config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$route_outbound_tag")
     fi
 
     if [ -n "$community_lists" ]; then
@@ -1450,6 +1579,9 @@ sing_box_additional_inbounds() {
 configure_section_mixed_proxy() {
     local section="$1"
 
+    section_is_enabled "$section" || return 0
+    section_is_outbound_connection_type "$section" || return 0
+
     local mixed_inbound_enabled mixed_proxy_port mixed_inbound_tag mixed_outbound_tag mixed_proxy_address
     config_get_bool mixed_inbound_enabled "$section" "mixed_proxy_enabled" 0
     mixed_proxy_address="$(get_service_listen_address)"
@@ -1507,6 +1639,9 @@ sing_box_config_check() {
 import_community_subnet_lists() {
     local section="$1"
     local community_lists
+
+    section_is_enabled "$section" || return 0
+
     config_get community_lists "$section" "community_lists"
     if [ -n "$community_lists" ]; then
         log "Importing community subnet lists for '$section' section"
@@ -1574,6 +1709,9 @@ import_community_service_subnet_list_handler() {
 import_domains_from_remote_domain_lists() {
     local section="$1"
     local remote_domain_lists
+
+    section_is_enabled "$section" || return 0
+
     config_get remote_domain_lists "$section" "remote_domain_lists"
     if [ -n "$remote_domain_lists" ]; then
         log "Importing domains from remote domain lists for '$section' section"
@@ -1627,6 +1765,9 @@ import_domains_from_remote_plain_file() {
 import_subnets_from_remote_subnet_lists() {
     local section="$1"
     local remote_subnet_lists
+
+    section_is_enabled "$section" || return 0
+
     config_get remote_subnet_lists "$section" "remote_subnet_lists"
     if [ -n "$remote_subnet_lists" ]; then
         log "Importing subnets from remote subnet lists for '$section' section"
@@ -1745,6 +1886,16 @@ get_download_detour_tag() {
     if [ "$download_lists_via_proxy" -eq 1 ]; then
         local download_lists_via_proxy_section section_outbound_tag
         config_get download_lists_via_proxy_section "settings" "download_lists_via_proxy_section"
+        section_is_enabled "$download_lists_via_proxy_section" || {
+            log "Configured detour section '$download_lists_via_proxy_section' is disabled, lists will be downloaded directly" "warn"
+            echo ""
+            return 0
+        }
+        section_is_outbound_connection_type "$download_lists_via_proxy_section" || {
+            log "Configured detour section '$download_lists_via_proxy_section' does not provide an outbound, lists will be downloaded directly" "warn"
+            echo ""
+            return 0
+        }
         section_outbound_tag="$(get_outbound_tag_by_section "$download_lists_via_proxy_section")"
         echo "$section_outbound_tag"
     else
@@ -1755,10 +1906,9 @@ get_download_detour_tag() {
 _determine_first_outbound_section() {
     local section="$1"
 
-    local connection_type
-    config_get connection_type "$section" "connection_type"
+    section_is_enabled "$section" || return 0
 
-    if [ "$connection_type" = "proxy" ] || [ "$connection_type" = "vpn" ]; then
+    if section_is_outbound_connection_type "$section"; then
         [ -z "$first_section" ] && first_section="$1"
     fi
 }
@@ -1771,12 +1921,28 @@ get_first_outbound_section() {
     echo "$first_section"
 }
 
+_collect_enabled_block_sections() {
+    local section="$1"
+    local connection_type
+
+    section_is_enabled "$section" || return 0
+
+    config_get connection_type "$section" "connection_type"
+    if [ "$connection_type" = "block" ]; then
+        block_sections="${block_sections:+$block_sections }$section"
+    fi
+}
+
 get_block_sections() {
-    uci show podkop | grep "\.connection_type='block'" | cut -d'.' -f2
+    local block_sections=""
+
+    config_foreach _collect_enabled_block_sections "section"
+
+    echo "$block_sections"
 }
 
 block_section_exists() {
-    if uci show podkop | grep -q "\.connection_type='block'"; then
+    if [ -n "$(get_block_sections)" ]; then
         return 0
     else
         return 1
@@ -1787,6 +1953,8 @@ section_has_enabled_lists() {
     local section="$1"
     local community_lists user_domain_list_type user_subnet_list_type local_domain_lists local_subnet_lists \
         remote_domain_lists remote_subnet_lists
+
+    section_is_enabled "$section" || return 1
 
     config_get community_lists "$section" "community_lists"
     config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
@@ -1810,7 +1978,7 @@ section_has_enabled_lists() {
 }
 
 get_service_listen_address() {
-    local service_listen_address
+    local service_listen_address source_network_interfaces interface
 
     config_get service_listen_address "settings" "service_listen_address"
     if [ -n "$service_listen_address" ]; then
@@ -1819,8 +1987,15 @@ get_service_listen_address() {
         return 0
     fi
 
-    local interface="lan"
-    network_get_ipaddr service_listen_address "$interface"
+    config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
+
+    for interface in $source_network_interfaces; do
+        service_listen_address="$(get_interface_primary_ipv4 "$interface")"
+        if [ -n "$service_listen_address" ]; then
+            echo "$service_listen_address"
+            return 0
+        fi
+    done
 
     if [ -z "$service_listen_address" ]; then
         log "Failed to determine the listening IP address. Please open an issue to report this problem: https://github.com/itdoginfo/podkop/issues" "error"
@@ -2439,6 +2614,7 @@ clash_api_delay_response_is_success() {
 clash_api_measure_interface_proxy_latency() {
     local proxy_tag="$1"
     local timeout_ms="$2"
+    local testing_urls="${3:-$CLASH_API_TEST_URLS}"
 
     local section interface_name timeout_seconds response delay curl_status
     section="${proxy_tag%-out}"
@@ -2450,7 +2626,7 @@ clash_api_measure_interface_proxy_latency() {
 
     timeout_seconds=$(((timeout_ms + 999) / 1000))
 
-    for test_url in $CLASH_API_TEST_URLS; do
+    for test_url in $testing_urls; do
         response=$(curl --interface "$interface_name" -o /dev/null -s -w "%{time_total}" -m "$timeout_seconds" "$test_url" 2> /dev/null)
         curl_status=$?
         if [ "$curl_status" -eq 0 ] && [ -n "$response" ]; then
@@ -2505,14 +2681,16 @@ clash_api() {
     get_proxy_latency)
         local proxy_tag="$2"
         local timeout="${3:-2000}"
-        local response last_response
+        local testing_urls response last_response
 
         if [ -z "$proxy_tag" ]; then
             echo '{"error":"proxy_tag required"}' | jq .
             return 1
         fi
 
-        for test_url in $CLASH_API_TEST_URLS; do
+        testing_urls="$(get_latency_test_urls_for_tag "$proxy_tag" "$4")"
+
+        for test_url in $testing_urls; do
             response=$(
                 curl -G -s "$CLASH_URL/proxies/$proxy_tag/delay" \
                     --header "$auth_header" \
@@ -2528,7 +2706,7 @@ clash_api() {
             [ -n "$response" ] && last_response="$response"
         done
 
-        if response=$(clash_api_measure_interface_proxy_latency "$proxy_tag" "$timeout"); then
+        if response=$(clash_api_measure_interface_proxy_latency "$proxy_tag" "$timeout" "$testing_urls"); then
             echo "$response" | jq .
             return 0
         fi
@@ -2543,14 +2721,16 @@ clash_api() {
     get_group_latency)
         local group_tag="$2"
         local timeout="${3:-5000}"
-        local response last_response
+        local testing_urls response last_response
 
         if [ -z "$group_tag" ]; then
             echo '{"error":"group_tag required"}' | jq .
             return 1
         fi
 
-        for test_url in $CLASH_API_TEST_URLS; do
+        testing_urls="$(get_latency_test_urls_for_tag "$group_tag" "$4")"
+
+        for test_url in $testing_urls; do
             response=$(
                 curl -G -s "$CLASH_URL/group/$group_tag/delay" \
                     --header "$auth_header" \

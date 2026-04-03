@@ -1,50 +1,135 @@
-name: Build packages
+name: Build and Release
 
 on:
   push:
     tags:
-      - "*"
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to build (e.g. v0.8.0)"
+        description: "Release version (for example: v0.8.0 or 0.8.0)"
         required: false
         default: ""
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
-  preparation:
-    name: Setup build version
-    runs-on: ubuntu-latest
+  prepare:
+    name: Prepare Release Metadata
+    runs-on: ubuntu-24.04
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.meta.outputs.version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      is_release: ${{ steps.meta.outputs.is_release }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
     steps:
-      - uses: actions/checkout@v5.0.0
-        with:
-          fetch-depth: 0
-      - id: version
+      - name: Resolve version
+        id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "0.$(date +%d%m%Y)")
+          set -euo pipefail
+
+          VERSION="$INPUT_VERSION"
+          if [ -z "$VERSION" ] && [ "$REF_TYPE" = "tag" ]; then
+            VERSION="$REF_NAME"
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "📦 Building version: $VERSION" >> $GITHUB_STEP_SUMMARY
+
+          if [ -z "$VERSION" ]; then
+            VERSION="v0.$(date +%d%m%Y)"
+          fi
+
+          if [[ "$VERSION" != v* ]]; then
+            VERSION="v$VERSION"
+          fi
+
+          IS_RELEASE=false
+          if [ "$REF_TYPE" = "tag" ] || [ -n "$INPUT_VERSION" ]; then
+            IS_RELEASE=true
+          fi
+
+          IS_PRERELEASE=false
+          case "$VERSION" in
+            *-alpha*|*-beta*|*-rc*) IS_PRERELEASE=true ;;
+          esac
+
+          RELEASE_TAG=""
+          if [ "$IS_RELEASE" = "true" ]; then
+            RELEASE_TAG="$VERSION"
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "release_tag=$RELEASE_TAG"
+            echo "is_release=$IS_RELEASE"
+            echo "is_prerelease=$IS_PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Release Metadata"
+            echo "- Version: \`$VERSION\`"
+            echo "- Release tag: \`${RELEASE_TAG:-n/a}\`"
+            echo "- Create release: \`$IS_RELEASE\`"
+            echo "- Prerelease: \`$IS_PRERELEASE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  frontend:
+    name: Frontend Checks
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: fe-app-podkop
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5.0.0
+        with:
+          node-version: "22"
+          cache: "yarn"
+          cache-dependency-path: fe-app-podkop/yarn.lock
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Check formatting
+        run: |
+          yarn format
+          git diff --exit-code
+
+      - name: Run linter
+        run: yarn lint --max-warnings=0
+
+      - name: Run tests
+        run: yarn test --run
+
+      - name: Build frontend
+        run: |
+          yarn build
+          git diff --exit-code
 
   build:
-    name: Build ${{ matrix.package_type }} packages
-    runs-on: ubuntu-latest
-    needs: preparation
+    name: Build ${{ matrix.package_type }} Packages
+    runs-on: ubuntu-24.04
+    needs: [prepare, frontend]
     strategy:
       matrix:
-        include:
-          - { package_type: ipk }
-          - { package_type: apk }
+        package_type: [ipk, apk]
     steps:
-      - uses: actions/checkout@v5.0.0
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
         with:
           fetch-depth: 0
 
@@ -58,116 +143,136 @@ jobs:
           context: .
           tags: podkop:ci-${{ matrix.package_type }}
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.package_type }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.package_type }}
           build-args: |
-            PODKOP_VERSION=${{ needs.preparation.outputs.version }}
+            PODKOP_VERSION=${{ needs.prepare.outputs.version }}
 
-      - name: Create ${{ matrix.package_type }} Docker container
+      - name: Create build container
         run: docker create --name ${{ matrix.package_type }} podkop:ci-${{ matrix.package_type }}
 
-      - name: Copy files from ${{ matrix.package_type }} Docker container
-        run: |
-          mkdir -p ./bin/${{ matrix.package_type }}
-          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/utilities/. ./bin/${{ matrix.package_type }}/
-          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/luci/. ./bin/${{ matrix.package_type }}/
-
-      - name: List built packages
-        run: |
-          echo "📦 Built packages:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          ls -la ./bin/${{ matrix.package_type }}/ >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      # IPK uses underscore `_` in filenames, while APK uses only dash `-`
-      - name: Fix naming difference between build for packages (replace _ with -)
-        if: matrix.package_type == 'ipk'
+      - name: Copy packages from container
         shell: bash
         run: |
-          for f in ./bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}; do
-            [ -e "$f" ] || continue
-            base=$(basename "$f")
-            newname=$(echo "$base" | sed 's/_/-/g')
-            mv "$f" "./bin/${{ matrix.package_type }}/$newname"
-          done
+          set -euo pipefail
+          mkdir -p "./bin/${{ matrix.package_type }}"
+          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/utilities/. "./bin/${{ matrix.package_type }}/"
+          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/luci/. "./bin/${{ matrix.package_type }}/"
 
-      - name: Filter files
+      - name: Normalize release assets
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PACKAGE_TYPE: ${{ matrix.package_type }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "./filtered-bin/${PACKAGE_TYPE}"
+
+          copy_asset() {
+            local pattern="$1"
+            local target="$2"
+            local source
+
+            source="$(find "./bin/${PACKAGE_TYPE}" -maxdepth 1 -type f -name "$pattern" | sort | head -n1)"
+            if [ -z "$source" ]; then
+              echo "::error::Cannot find asset matching pattern: $pattern"
+              exit 1
+            fi
+
+            cp "$source" "./filtered-bin/${PACKAGE_TYPE}/${target}"
+          }
+
+          copy_asset "podkop*.${PACKAGE_TYPE}" "podkop-${VERSION}.${PACKAGE_TYPE}"
+          copy_asset "luci-app-podkop*.${PACKAGE_TYPE}" "luci-app-podkop-${VERSION}.${PACKAGE_TYPE}"
+          copy_asset "luci-i18n-podkop-ru*.${PACKAGE_TYPE}" "luci-i18n-podkop-ru-${VERSION}.${PACKAGE_TYPE}"
+
+      - name: List release assets
         shell: bash
         run: |
-          VERSION="${{ needs.preparation.outputs.version }}"
-
-          mkdir -p ./filtered-bin/${{ matrix.package_type }}
-          cp ./bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-*.${{ matrix.package_type }} "./filtered-bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-${VERSION}.${{ matrix.package_type }}" || true
-          cp ./bin/${{ matrix.package_type }}/podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
-          cp ./bin/${{ matrix.package_type }}/luci-app-podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
-
-      - name: Remove Docker container
-        run: docker rm ${{ matrix.package_type }}
+          {
+            echo "## Built ${{ matrix.package_type }} assets"
+            echo '```'
+            ls -la "./filtered-bin/${{ matrix.package_type }}/"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: release-files-${{ github.ref_name || needs.preparation.outputs.version }}-${{ matrix.package_type }}
+          name: release-files-${{ needs.prepare.outputs.version }}-${{ matrix.package_type }}
           path: ./filtered-bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}
           retention-days: 7
           if-no-files-found: error
 
+      - name: Remove build container
+        if: always()
+        run: docker rm -f ${{ matrix.package_type }} || true
+
   release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: [preparation, build]
-    if: startsWith(github.ref, 'refs/tags/')
+    name: Publish Release
+    runs-on: ubuntu-24.04
+    needs: [prepare, build]
+    if: needs.prepare.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v5.0.0
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
 
-      - name: Create release dir
-        run: mkdir -p ./filtered-bin/release
-
-      - name: Download ipk artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: release-files-${{ github.ref_name }}-ipk
+          pattern: release-files-${{ needs.prepare.outputs.version }}-*
           path: ./filtered-bin/release
+          merge-multiple: true
 
-      - name: Download apk artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: release-files-${{ github.ref_name }}-apk
-          path: ./filtered-bin/release
-
-      - name: List release files
+      - name: Build release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          echo "📦 Release files:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          ls -la ./filtered-bin/release/ >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
 
-      - name: Release
+          mkdir -p ./.release
+          RELEASE_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${RELEASE_TAG}" \
+            -f target_commitish="${GITHUB_SHA}" \
+            --jq '.body' > ./.release/generated-notes.md
+
+          {
+            echo "## Packages"
+            while IFS= read -r asset; do
+              name="$(basename "$asset")"
+              echo "- [${name}](${RELEASE_BASE_URL}/${name})"
+            done < <(find ./filtered-bin/release -maxdepth 1 -type f | sort)
+            echo
+            echo "## Install"
+            echo '```bash'
+            echo "wget ${RELEASE_BASE_URL}/podkop-${VERSION}.ipk"
+            echo "opkg install podkop-${VERSION}.ipk"
+            echo '```'
+            echo
+            cat ./.release/generated-notes.md
+          } > ./.release/release-notes.md
+
+          {
+            echo "## Release assets"
+            echo
+            cat ./.release/release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create or update release
         uses: softprops/action-gh-release@v2.4.0
         with:
-          files: ./filtered-bin/release/*.*
+          files: ./filtered-bin/release/*
+          body_path: ./.release/release-notes.md
           draft: false
-          prerelease: true
-          name: ${{ github.ref_name }} (Experimental Fork)
-          tag_name: ${{ github.ref_name }}
-          body: |
-            ## 🧪 Experimental Fork Release
-
-            > ⚠️ This is an experimental fork of [Podkop](https://github.com/itdoginfo/podkop)
-
-            ### 📦 Packages
-            - `podkop-*.ipk` / `podkop-*.apk` - Main package
-            - `luci-app-podkop-*.ipk` / `luci-app-podkop-*.apk` - LuCI interface
-            - `luci-i18n-podkop-ru-*.ipk` / `*.apk` - Russian translation
-
-            ### 🚀 Installation
-            ```bash
-            # Download and install
-            wget <package-url>
-            opkg install <package-file>
-            ```
-
-            ### ✨ New Features in this Fork
-            - Subscription support (sing-box & base64)
-            - Tag-based filtering
-            - Auto-update via cron
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          make_latest: ${{ needs.prepare.outputs.is_prerelease != 'true' }}
+          name: ${{ needs.prepare.outputs.release_tag }}
+          tag_name: ${{ needs.prepare.outputs.release_tag }}

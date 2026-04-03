@@ -3,5 +3,5 @@ export function normalizeCompiledVersion(version: string) {
     return 'dev';
   }
 
-  return version;
+  return version.replace(/^v/, '');
 }

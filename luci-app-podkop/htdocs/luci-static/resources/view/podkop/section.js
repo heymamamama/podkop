@@ -7,6 +7,15 @@
 
 function createSectionContent(section) {
   let o = section.option(
+    form.Flag,
+    "enabled",
+    _("Enabled"),
+    _("Disable the section without deleting its settings"),
+  );
+  o.default = "1";
+  o.rmempty = false;
+
+  o = section.option(
     form.ListValue,
     "connection_type",
     _("Connection Type"),
@@ -15,6 +24,7 @@ function createSectionContent(section) {
   o.value("proxy", "Proxy");
   o.value("vpn", "VPN");
   o.value("block", "Block");
+  o.value("exclusion", _("Exclusion"));
 
   o = section.option(
     form.ListValue,

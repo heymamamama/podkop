@@ -537,7 +537,7 @@ sing_box_cm_add_shadowsocks_outbound() {
     local network="$7"
     local udp_over_tcp="$8"
     local plugin="$9"
-    local plugin_opts="${10}"
+    local plugin_opts="${10:-}"
 
     echo "$config" | jq \
         --arg tag "$tag" \
@@ -598,6 +598,7 @@ sing_box_cm_add_vless_outbound() {
     local flow="$6"
     local network="$7"
     local packet_encoding="$8"
+    local tcp_multi_path="$9"
 
     echo "$config" | jq \
         --arg tag "$tag" \
@@ -607,6 +608,7 @@ sing_box_cm_add_vless_outbound() {
         --arg flow "$flow" \
         --arg network "$network" \
         --arg packet_encoding "$packet_encoding" \
+        --arg tcp_multi_path "$tcp_multi_path" \
         '.outbounds += [(
             {
               type: "vless",
@@ -618,6 +620,7 @@ sing_box_cm_add_vless_outbound() {
             + (if $flow != "" then {flow: $flow} else {} end)
             + (if $network != "" then {network: $network} else {} end)
             + (if $packet_encoding != "" then {packet_encoding: $packet_encoding} else {} end)
+            + (if $tcp_multi_path == "1" then {tcp_multi_path: true} else {} end)
         )]'
 }
 
@@ -690,7 +693,7 @@ sing_box_cm_add_hysteria2_outbound() {
     local obfuscator_password="$7"
     local upload_mbps="$8"
     local download_mbps="$9"
-    local network="${10}"
+    local network="${10:-}"
 
     echo "$config" | jq \
         --arg tag "$tag" \
@@ -759,6 +762,41 @@ sing_box_cm_set_grpc_transport_for_outbound() {
                         + (if $idle_timeout != "" then {idle_timeout: $idle_timeout} else {} end)
                         + (if $ping_timeout != "" then {ping_timeout: $ping_timeout} else {} end)
                         + (if $permit_without_stream != "" then {permit_without_stream: $permit_without_stream} else {} end)
+                    )
+                }
+            else
+                .
+            end
+        )'
+}
+
+#######################################
+# Set HTTPUpgrade transport settings for an outbound in a sing-box JSON configuration.
+# Arguments:
+#   config: string (JSON), sing-box configuration to modify
+#   tag: string, identifier of the outbound to modify
+#   host: string, host header value (optional)
+#   path: string, request path (optional)
+# Outputs:
+#   Writes updated JSON configuration to stdout
+#######################################
+sing_box_cm_set_httpupgrade_transport_for_outbound() {
+    local config="$1"
+    local tag="$2"
+    local host="$3"
+    local path="$4"
+
+    echo "$config" | jq \
+        --arg tag "$tag" \
+        --arg host "$host" \
+        --arg path "$path" \
+        '.outbounds |= map(
+            if .tag == $tag then
+                . + {
+                    transport: (
+                        { type: "httpupgrade" }
+                        + (if $host != "" then {host: $host} else {} end)
+                        + (if $path != "" then {path: $path} else {} end)
                     )
                 }
             else

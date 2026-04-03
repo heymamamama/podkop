@@ -86,6 +86,7 @@ export namespace Podkop {
     withTagSelect: boolean;
     code: string;
     displayName: string;
+    testingUrl?: string;
     outbounds: Outbound[];
   }
 
@@ -93,6 +94,7 @@ export namespace Podkop {
     connection_type: 'proxy';
     proxy_config_type: 'urltest';
     urltest_proxy_links: string[];
+    urltest_testing_url?: string;
   }
 
   export interface ConfigProxyUrlSection {
@@ -115,6 +117,7 @@ export namespace Podkop {
     subscription_filter: string[];
     subscription_selected: string[];
     subscription_mode: 'filter' | 'select' | 'both';
+    urltest_testing_url?: string;
   }
 
   export interface ConfigVpnSection {
@@ -126,18 +129,24 @@ export namespace Podkop {
     connection_type: 'block';
   }
 
+  export interface ConfigExclusionSection {
+    connection_type: 'exclusion';
+  }
+
   export type ConfigBaseSection =
     | ConfigProxyUrlTestSection
     | ConfigProxyUrlSection
     | ConfigProxyOutboundSection
     | ConfigProxySubscriptionSection
     | ConfigVpnSection
-    | ConfigBlockSection;
+    | ConfigBlockSection
+    | ConfigExclusionSection;
 
   export type ConfigSection = ConfigBaseSection & {
     '.name': string;
     '.type': 'settings' | 'section';
     yacd_secret_key?: string;
+    enabled?: '0' | '1';
   };
 
   export interface MethodSuccessResponse<T> {

@@ -648,13 +648,13 @@ var PodkopShellMethods = {
   getClashApiProxies: async () => callBaseMethod(Podkop.AvailableMethods.CLASH_API, [
     Podkop.AvailableClashAPIMethods.GET_PROXIES
   ]),
-  getClashApiProxyLatency: async (tag) => callBaseMethod(
+  getClashApiProxyLatency: async (tag, testingUrl) => callBaseMethod(
     Podkop.AvailableMethods.CLASH_API,
-    [Podkop.AvailableClashAPIMethods.GET_PROXY_LATENCY, tag, "5000"]
+    [Podkop.AvailableClashAPIMethods.GET_PROXY_LATENCY, tag, "5000", testingUrl ?? ""]
   ),
-  getClashApiGroupLatency: async (tag) => callBaseMethod(
+  getClashApiGroupLatency: async (tag, testingUrl) => callBaseMethod(
     Podkop.AvailableMethods.CLASH_API,
-    [Podkop.AvailableClashAPIMethods.GET_GROUP_LATENCY, tag, "10000"]
+    [Podkop.AvailableClashAPIMethods.GET_GROUP_LATENCY, tag, "10000", testingUrl ?? ""]
   ),
   setClashApiGroupProxy: async (group, proxy) => callBaseMethod(Podkop.AvailableMethods.CLASH_API, [
     Podkop.AvailableClashAPIMethods.SET_GROUP_PROXY,
@@ -711,7 +711,7 @@ async function getDashboardSections() {
     })
   );
   const data = configSections.filter(
-    (section) => section.connection_type !== "block" && section[".type"] !== "settings"
+    (section) => section[".type"] !== "settings" && section.enabled !== "0" && section.connection_type !== "block" && section.connection_type !== "exclusion"
   ).map((section) => {
     if (section.connection_type === "proxy") {
       if (section.proxy_config_type === "url") {
@@ -775,6 +775,7 @@ async function getDashboardSections() {
           withTagSelect: true,
           code: selector?.code || section[".name"],
           displayName: section[".name"],
+          testingUrl: section.urltest_testing_url,
           outbounds: [
             {
               code: outbound?.code || "",
@@ -805,6 +806,7 @@ async function getDashboardSections() {
           withTagSelect: true,
           code: selector?.code || section[".name"],
           displayName: `${section[".name"]} (subscription)`,
+          testingUrl: section.urltest_testing_url,
           outbounds: [
             {
               code: outbound?.code || "",
@@ -3792,7 +3794,7 @@ function normalizeCompiledVersion(version) {
   if (version.includes("COMPILED")) {
     return "dev";
   }
-  return version;
+  return version.replace(/^v/, "");
 }
 
 // src/podkop/tabs/diagnostic/partials/renderWikiDisclaimer.ts
@@ -3858,7 +3860,8 @@ async function runSectionsCheck() {
       async function getLatency() {
         if (section.withTagSelect) {
           const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
-            section.code
+            section.code,
+            section.testingUrl
           );
           const selectedOutbound = section.outbounds.find(
             (item) => item.selected
@@ -3891,7 +3894,8 @@ async function runSectionsCheck() {
           };
         }
         const latencyProxy = await PodkopShellMethods.getClashApiProxyLatency(
-          section.code
+          section.code,
+          section.testingUrl
         );
         const success2 = latencyProxy.success && !latencyProxy.data.message;
         if (success2) {
@@ -4280,6 +4284,9 @@ function renderDiagnosticSystemInfoWidget() {
     const version = normalizeCompiledVersion(
       diagnosticsSystemInfo.podkop_version
     );
+    const latestVersion = normalizeCompiledVersion(
+      diagnosticsSystemInfo.podkop_latest_version
+    );
     const isDevVersion = version === "dev";
     if (loading || unknown || !hasActualVersion || isDevVersion) {
       return {
@@ -4287,7 +4294,7 @@ function renderDiagnosticSystemInfoWidget() {
         value: version
       };
     }
-    if (version !== `v${diagnosticsSystemInfo.podkop_latest_version}`) {
+    if (version !== latestVersion) {
       logger.debug(
         "[DIAGNOSTIC]",
         "diagnosticsSystemInfo",

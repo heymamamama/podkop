@@ -323,7 +323,12 @@ function createSettingsContent(section) {
 
     for (const secName in sections) {
       const sec = sections[secName];
-      if (sec[".type"] === "section") {
+      if (
+        sec[".type"] === "section" &&
+        sec.enabled !== "0" &&
+        sec.connection_type !== "block" &&
+        sec.connection_type !== "exclusion"
+      ) {
         this.keylist.push(secName);
         this.vallist.push(secName);
       }

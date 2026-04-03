@@ -1,6 +1,13 @@
 name: Frontend CI
 
 on:
+  push:
+    branches:
+      - main
+      - 'rc/**'
+    paths:
+      - 'fe-app-podkop/**'
+      - '.github/workflows/frontend-ci.yml'
   pull_request:
     paths:
       - 'fe-app-podkop/**'
@@ -18,26 +25,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v5.0.0
         with:
           node-version: '22'
+          cache: 'yarn'
+          cache-dependency-path: fe-app-podkop/yarn.lock
 
       - name: Enable Corepack
         run: corepack enable
-
-      - name: Get yarn cache directory path
-        id: yarn-cache-dir-path
-        working-directory: fe-app-podkop
-        run: echo "dir=$(yarn config get cacheFolder)" >> $GITHUB_OUTPUT
-
-      - name: Cache yarn dependencies
-        uses: actions/cache@v4.3.0
-        with:
-          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
-          key: ${{ runner.os }}-yarn-${{ hashFiles('fe-app-podkop/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
 
       - name: Install dependencies
         run: yarn install --frozen-lockfile
@@ -71,8 +67,6 @@ jobs:
         run: |
           echo "## Frontend CI Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Format check: ${{ steps.format.outcome }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Lint check: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Tests: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Build: ${{ steps.build.outcome }}" >> $GITHUB_STEP_SUMMARY
-          echo "![Success](https://cdn2.combot.org/boratbrat/webp/6xf09f988f.webp)" >> $GITHUB_STEP_SUMMARY
+          echo "- Format: ${{ steps.format.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ steps.build.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Job status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY

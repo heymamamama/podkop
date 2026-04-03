@@ -38,6 +38,7 @@ export async function runSectionsCheck() {
         if (section.withTagSelect) {
           const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
             section.code,
+            section.testingUrl,
           );
 
           const selectedOutbound = section.outbounds.find(
@@ -84,6 +85,7 @@ export async function runSectionsCheck() {
 
         const latencyProxy = await PodkopShellMethods.getClashApiProxyLatency(
           section.code,
+          section.testingUrl,
         );
 
         const success = latencyProxy.success && !latencyProxy.data.message;

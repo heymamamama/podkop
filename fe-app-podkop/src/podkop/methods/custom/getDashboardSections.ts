@@ -29,7 +29,10 @@ export async function getDashboardSections(): Promise<IGetDashboardSectionsRespo
   const data = configSections
     .filter(
       (section) =>
-        section.connection_type !== 'block' && section['.type'] !== 'settings',
+        section['.type'] !== 'settings' &&
+        section.enabled !== '0' &&
+        section.connection_type !== 'block' &&
+        section.connection_type !== 'exclusion',
     )
     .map((section) => {
       if (section.connection_type === 'proxy') {
@@ -111,6 +114,7 @@ export async function getDashboardSections(): Promise<IGetDashboardSectionsRespo
             withTagSelect: true,
             code: selector?.code || section['.name'],
             displayName: section['.name'],
+            testingUrl: section.urltest_testing_url,
             outbounds: [
               {
                 code: outbound?.code || '',
@@ -146,6 +150,7 @@ export async function getDashboardSections(): Promise<IGetDashboardSectionsRespo
             withTagSelect: true,
             code: selector?.code || section['.name'],
             displayName: `${section['.name']} (subscription)`,
+            testingUrl: section.urltest_testing_url,
             outbounds: [
               {
                 code: outbound?.code || '',

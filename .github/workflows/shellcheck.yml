@@ -9,6 +9,8 @@ on:
       - 'install.sh'
       - 'podkop/files/usr/bin/**'
       - 'podkop/files/usr/lib/**'
+      - 'podkop/files/etc/init.d/**'
+      - 'podkop/files/etc/hotplug.d/**'
       - '.github/workflows/shellcheck.yml'
   pull_request:
     branches:
@@ -18,6 +20,8 @@ on:
       - 'install.sh'
       - 'podkop/files/usr/bin/**'
       - 'podkop/files/usr/lib/**'
+      - 'podkop/files/etc/init.d/**'
+      - 'podkop/files/etc/hotplug.d/**'
       - '.github/workflows/shellcheck.yml'
 
 permissions:
@@ -45,5 +49,7 @@ jobs:
           include-path: |
             podkop/files/usr/bin/podkop
             podkop/files/usr/lib/**.sh
+            podkop/files/etc/init.d/**
+            podkop/files/etc/hotplug.d/**
             install.sh
           token: ${{ secrets.GITHUB_TOKEN }}
