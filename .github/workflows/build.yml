@@ -43,6 +43,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.meta.outputs.version }}
+      package_version: ${{ steps.meta.outputs.package_version }}
+      artifact_version: ${{ steps.meta.outputs.artifact_version }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       is_release: ${{ steps.meta.outputs.is_release }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
@@ -63,11 +65,7 @@ jobs:
           fi
 
           if [ -z "$VERSION" ]; then
-            VERSION="v0.$(date +%d%m%Y)"
-          fi
-
-          if [[ "$VERSION" != v* ]]; then
-            VERSION="v$VERSION"
+            VERSION="0.$(date +%d%m%Y)"
           fi
 
           IS_RELEASE=false
@@ -75,18 +73,27 @@ jobs:
             IS_RELEASE=true
           fi
 
+          RELEASE_TAG=""
+          if [ "$IS_RELEASE" = "true" ]; then
+            if [[ "$VERSION" != v* ]]; then
+              RELEASE_TAG="v$VERSION"
+            else
+              RELEASE_TAG="$VERSION"
+            fi
+          fi
+
+          PACKAGE_VERSION="${VERSION#v}"
+          ARTIFACT_VERSION="${RELEASE_TAG:-$PACKAGE_VERSION}"
+
           IS_PRERELEASE=false
-          case "$VERSION" in
+          case "${RELEASE_TAG:-$VERSION}" in
             *-alpha*|*-beta*|*-rc*) IS_PRERELEASE=true ;;
           esac
 
-          RELEASE_TAG=""
-          if [ "$IS_RELEASE" = "true" ]; then
-            RELEASE_TAG="$VERSION"
-          fi
-
           {
-            echo "version=$VERSION"
+            echo "version=${RELEASE_TAG:-$PACKAGE_VERSION}"
+            echo "package_version=$PACKAGE_VERSION"
+            echo "artifact_version=$ARTIFACT_VERSION"
             echo "release_tag=$RELEASE_TAG"
             echo "is_release=$IS_RELEASE"
             echo "is_prerelease=$IS_PRERELEASE"
@@ -94,7 +101,9 @@ jobs:
 
           {
             echo "## Release Metadata"
-            echo "- Version: \`$VERSION\`"
+            echo "- Version: \`${RELEASE_TAG:-$PACKAGE_VERSION}\`"
+            echo "- Package version: \`$PACKAGE_VERSION\`"
+            echo "- Artifact version: \`$ARTIFACT_VERSION\`"
             echo "- Release tag: \`${RELEASE_TAG:-n/a}\`"
             echo "- Create release: \`$IS_RELEASE\`"
             echo "- Prerelease: \`$IS_PRERELEASE\`"
@@ -165,7 +174,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.package_type }}
           cache-to: type=gha,mode=max,scope=${{ matrix.package_type }}
           build-args: |
-            PODKOP_VERSION=${{ needs.prepare.outputs.version }}
+            PODKOP_VERSION=${{ needs.prepare.outputs.package_version }}
 
       - name: Create build container
         run: docker create --name ${{ matrix.package_type }} podkop:ci-${{ matrix.package_type }}
@@ -181,7 +190,7 @@ jobs:
       - name: Normalize release assets
         shell: bash
         env:
-          VERSION: ${{ needs.prepare.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.artifact_version }}
           PACKAGE_TYPE: ${{ matrix.package_type }}
         run: |
           set -euo pipefail
@@ -219,7 +228,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: release-files-${{ needs.prepare.outputs.version }}-${{ matrix.package_type }}
+          name: release-files-${{ needs.prepare.outputs.artifact_version }}-${{ matrix.package_type }}
           path: ./filtered-bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}
           retention-days: 7
           if-no-files-found: error
@@ -240,7 +249,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: release-files-${{ needs.prepare.outputs.version }}-*
+          pattern: release-files-${{ needs.prepare.outputs.artifact_version }}-*
           path: ./filtered-bin/release
           merge-multiple: true
 
@@ -249,7 +258,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          VERSION: ${{ needs.prepare.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.artifact_version }}
         run: |
           set -euo pipefail
 
