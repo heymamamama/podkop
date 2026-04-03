@@ -650,11 +650,21 @@ var PodkopShellMethods = {
   ]),
   getClashApiProxyLatency: async (tag, testingUrl) => callBaseMethod(
     Podkop.AvailableMethods.CLASH_API,
-    [Podkop.AvailableClashAPIMethods.GET_PROXY_LATENCY, tag, "5000", testingUrl ?? ""]
+    [
+      Podkop.AvailableClashAPIMethods.GET_PROXY_LATENCY,
+      tag,
+      "5000",
+      testingUrl ?? ""
+    ]
   ),
   getClashApiGroupLatency: async (tag, testingUrl) => callBaseMethod(
     Podkop.AvailableMethods.CLASH_API,
-    [Podkop.AvailableClashAPIMethods.GET_GROUP_LATENCY, tag, "10000", testingUrl ?? ""]
+    [
+      Podkop.AvailableClashAPIMethods.GET_GROUP_LATENCY,
+      tag,
+      "10000",
+      testingUrl ?? ""
+    ]
   ),
   setClashApiGroupProxy: async (group, proxy) => callBaseMethod(Podkop.AvailableMethods.CLASH_API, [
     Podkop.AvailableClashAPIMethods.SET_GROUP_PROXY,
@@ -926,6 +936,23 @@ var UPDATE_INTERVAL_OPTIONS = {
   "12h": "Every 12 hours",
   "1d": "Every day",
   "3d": "Every 3 days"
+};
+var SUBSCRIPTION_UPDATE_INTERVAL_OPTIONS = {
+  "10m": "Every 10 minutes",
+  "1h": "Every hour",
+  "6h": "Every 6 hours",
+  "1d": "Every day",
+  disabled: "Disabled"
+};
+var SUBSCRIPTION_TYPE_OPTIONS = {
+  auto: "Auto-detect",
+  singbox: "Sing-box Outbounds",
+  base64: "Base64 Links"
+};
+var SUBSCRIPTION_MODE_OPTIONS = {
+  filter: "Filter by tags",
+  select: "Manual selection",
+  both: "Both"
 };
 var DNS_SERVER_OPTIONS = {
   "1.1.1.1": "1.1.1.1 (Cloudflare)",
@@ -4902,6 +4929,9 @@ return baseclass.extend({
   REGIONAL_OPTIONS,
   RemoteFakeIPMethods,
   STATUS_COLORS,
+  SUBSCRIPTION_MODE_OPTIONS,
+  SUBSCRIPTION_TYPE_OPTIONS,
+  SUBSCRIPTION_UPDATE_INTERVAL_OPTIONS,
   TabService,
   TabServiceInstance,
   UPDATE_INTERVAL_OPTIONS,
