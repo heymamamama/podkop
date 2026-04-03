@@ -2,8 +2,27 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
+      - 'rc/**'
     tags:
       - "v*"
+    paths:
+      - '.github/workflows/build.yml'
+      - 'Dockerfile-*'
+      - 'podkop/**'
+      - 'luci-app-podkop/**'
+      - 'fe-app-podkop/**'
+  pull_request:
+    branches:
+      - main
+      - 'rc/**'
+    paths:
+      - '.github/workflows/build.yml'
+      - 'Dockerfile-*'
+      - 'podkop/**'
+      - 'luci-app-podkop/**'
+      - 'fe-app-podkop/**'
   workflow_dispatch:
     inputs:
       version:
